@@ -1,5 +1,7 @@
 import React, { useRef, useState, useEffect } from "react";
 import * as Tesseract from "tesseract.js";
+import Account from "./Account";
+import { files as filesApi } from "./api";
 
 // -----------------------------------------------------------------------------
 // TRANSCRIBEX – SPA + OCR (Tesseract.js) – manuscritos turbo (Sauvola/PSM/linhas)
@@ -113,12 +115,7 @@ function otsuThreshold(hist, total) {
 }
 
 /**
- * Pré-processamento poderoso para manuscritos:
- *  - cortes em todos os lados (%, 0-100)
- *  - escolha de canal (r/g/b/auto)
- *  - binarização: 'sauvola' (adaptativa) | 'otsu' | 'none'
- *  - deskew leve (graus)
- *  - inverter
+ * Pré-processamento poderoso para manuscritos
  */
 async function preprocessImageToCanvas(file, { crop, binarize, channel, invert, skew }) {
   const img = await loadImageFromFile(file);
@@ -238,7 +235,6 @@ async function recognizeInStrips(file, opts, lang, setProgress) {
     const canvas = await preprocessImageToCanvas(file, { ...opts, crop: seg });
     const { data } = await Tesseract.recognize(canvas, lang, { tessedit_pageseg_mode: 7, logger: (m) => {
       if (m.status === "recognizing text" && m.progress != null) {
-        // progresso aproximado entre as faixas
         setProgress(Math.min(99, Math.round(((i + m.progress) / strips) * 100)));
       }
     }});
@@ -262,10 +258,10 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [lang, setLang] = useState("por");
   const [enhance, setEnhance] = useState(true);
-  const [cropTopPct, setCropTopPct] = useState(40); // (mantive para compatibilidade)
+  const [cropTopPct, setCropTopPct] = useState(40); // compat
   const [docMode, setDocMode] = useState("typed"); // 'typed' | 'hand'
 
-  // NOVOS estados avançados (manuscrito)
+  // estados avançados (manuscrito)
   const [crop, setCrop] = useState({ top: 35, bottom: 5, left: 5, right: 5 }); // %
   const [binarize, setBinarize] = useState("sauvola"); // 'sauvola' | 'otsu' | 'none'
   const [channel, setChannel] = useState("auto");      // 'auto' | 'r' | 'g' | 'b'
@@ -307,7 +303,6 @@ export default function App() {
 
     try {
       if (docMode === "hand" && enhance) {
-        // modo manuscrito
         if (lineMode) {
           const text = await recognizeInStrips(file, { crop, binarize, channel, invert, skew }, lang, setProgress);
           setTranscription(text);
@@ -320,7 +315,6 @@ export default function App() {
           setTranscription(data.text || "");
         }
       } else {
-        // datilografado simples
         const { data } = await Tesseract.recognize(file, lang, {
           tessedit_pageseg_mode: 6,
           logger: (m) => { if (m.status === "recognizing text" && m.progress != null) setProgress(Math.round(m.progress * 100)); },
@@ -339,6 +333,39 @@ export default function App() {
     setFile(null); setFileUrl(""); setTranscription(""); setStatus("idle"); setError(""); setProgress(0); setRoute("home");
   }
 
+  // baixar arquivo do backend e abrir no OCR
+  async function handleUseUploadedInOCR(row) {
+    try {
+      setError("");
+      setStatus("ready");
+      setTranscription("");
+
+      // 1) baixa como blob (com cookie)
+      const url = filesApi.url(row.id);
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Falha ao baixar arquivo");
+      const blob = await res.blob();
+
+      // 2) cria um File a partir do Blob (evita CORS/taint em canvas)
+      const fname = row.originalName || "arquivo";
+      const fileLike = new File([blob], fname, { type: blob.type || "application/octet-stream" });
+
+      // 3) prepara preview e estado
+      if (fileUrl) URL.revokeObjectURL(fileUrl);
+      const objUrl = URL.createObjectURL(fileLike);
+
+      setFile(fileLike);
+      setFileUrl(objUrl);
+      setRoute("doc");
+
+      // Se quiser iniciar o OCR automaticamente, descomente:
+      // await handleTranscribe();
+    } catch (e) {
+      console.error(e);
+      setError("Não consegui abrir o arquivo no OCR. Tente novamente.");
+    }
+  }
+
   const Nav = (
     <nav className="sticky top-0 z-10 border-b" style={{ borderColor: BRAND.base, background: "linear-gradient(90deg, rgba(123,46,46,0.96) 0%, rgba(105,38,38,0.96) 100%)" }}>
       <div className="max-w-5xl mx-auto px-4">
@@ -353,10 +380,14 @@ export default function App() {
               ["doc", "Documento / Transcrição"],
               ["about", "Sobre o sistema"],
               ["docs", "Sobre documentos"],
+              ["account", "Conta"],
             ].map(([r, label]) => (
-              <button key={r} onClick={() => setRoute(r)}
+              <button
+                key={r}
+                onClick={() => setRoute(r)}
                 className={`px-3 py-1.5 rounded-lg text-sm transition ${route === r ? "bg-white text-slate-900" : "text-white hover:bg-white/10"}`}
-                style={route === r ? { color: BRAND.base } : undefined}>
+                style={route === r ? { color: BRAND.base } : undefined}
+              >
                 {label}
               </button>
             ))}
@@ -398,6 +429,7 @@ export default function App() {
 
         {route === "about" && <AboutSystem />}
         {route === "docs" && <AboutDocuments />}
+        {route === "account" && <Account onUseInOCR={handleUseUploadedInOCR} />}
       </main>
       <footer className="max-w-5xl mx-auto px-4 py-10 text-xs text-slate-500 text-center">
         <div className="inline-flex items-center gap-2 px-3 py-2 rounded-full border bg-white/70 backdrop-blur">
