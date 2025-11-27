@@ -3,39 +3,58 @@ import React, { useEffect, useState } from "react";
 import { auth, files } from "./api";
 
 const Field = (p) => (
-  <label className="text-sm w-full">
-    <div className="mb-1 text-slate-600">{p.label}</div>
-    <input {...p} className={"border rounded-lg px-3 py-2 w-full " + (p.className || "")} />
+  <label className="text-xs w-full">
+    <div className="mb-1 text-slate-800">{p.label}</div>
+    <input
+      {...p}
+      className={
+        "border border-slate-300 bg-white text-slate-900 placeholder-slate-400 " +
+        "rounded-lg px-3 py-2 w-full text-xs focus:outline-none focus:ring-2 focus:ring-cyan-400 " +
+        (p.className || "")
+      }
+    />
   </label>
 );
 
-// helper: checa se o nome do arquivo parece imagem suportada pelo OCR local
+// helper para detectar se o nome parece imagem
 const isImgName = (n) => /\.(png|jpe?g|webp)$/i.test(n || "");
 
 export default function Account({ onUseInOCR }) {
   const [user, setUser] = useState(null);
-  const [list, setList] = useState([]);
-  const [tab, setTab] = useState("login"); // 'login' | 'register'
-  const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [form, setForm] = useState({ email: "", password: "", name: "" });
   const [msg, setMsg] = useState("");
+  const [list, setList] = useState([]);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const u = await auth.me();
-        setUser(u);
-        if (u) setList(await files.list());
-      } catch {
-        // silencia erro de sessão ausente
-      }
-    })();
+    auth.me().then(setUser).catch(() => {});
+    files.list().then(setList).catch(() => {});
   }, []);
+
+  function onChange(e) {
+    setForm({ ...form, [e.target.name]: e.target.value });
+  }
 
   async function doRegister(e) {
     e?.preventDefault();
     setMsg("");
+
+    const email = form.email.trim();
+    const password = form.password.trim();
+    const name = form.name.trim();
+
+    if (!email || !password) {
+      setMsg("Preencha pelo menos email e senha.");
+      return;
+    }
+
+    if (password.length < 8) {
+      setMsg("A senha precisa ter pelo menos 8 caracteres.");
+      return;
+    }
+
     try {
-      const u = await auth.register({ ...form });
+      const u = await auth.register({ email, password, name });
       setUser(u);
       setList(await files.list());
       setMsg("Conta criada e sessão iniciada ✅");
@@ -47,8 +66,17 @@ export default function Account({ onUseInOCR }) {
   async function doLogin(e) {
     e?.preventDefault();
     setMsg("");
+
+    const email = form.email.trim();
+    const password = form.password.trim();
+
+    if (!email || !password) {
+      setMsg("Preencha email e senha para entrar.");
+      return;
+    }
+
     try {
-      const u = await auth.login({ email: form.email, password: form.password });
+      const u = await auth.login({ email, password });
       setUser(u);
       setList(await files.list());
       setMsg("Login ok ✅");
@@ -65,165 +93,254 @@ export default function Account({ onUseInOCR }) {
   }
 
   async function onUpload(e) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setMsg("Enviando arquivo…");
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setMsg("");
+    setUploading(true);
+
     try {
-      await files.upload(f);
-      setList(await files.list());
-      setMsg("Arquivo enviado ✅");
-    } catch {
-      setMsg("Falha no upload");
+      const saved = await files.upload(file);
+      setList((prev) => [saved, ...prev]);
+      setMsg("Arquivo enviado com sucesso ☑️");
+    } catch (err) {
+      setMsg(err?.response?.data?.error || "Falha ao enviar arquivo");
     } finally {
+      setUploading(false);
       e.target.value = "";
     }
   }
 
+async function onDelete(id) {
+  if (!window.confirm("Excluir este arquivo?")) return;
+  setMsg("");
+
+  try {
+    const res = await files.remove(id);
+
+    if (!res || res.error) {
+      throw new Error(res?.error || "Falha ao excluir");
+    }
+
+    // atualiza lista local
+    setList((prev) => prev.filter((f) => f.id !== id));
+
+    setMsg("Arquivo excluído com sucesso.");
+  } catch (err) {
+    console.error(err);
+    setMsg(err?.message || "Erro ao excluir o arquivo.");
+  }
+}
+
+
   return (
-    <div className="grid md:grid-cols-2 gap-6">
-      {/* Coluna esquerda: Sessão / Login / Registro */}
-      <div className="bg-white/80 backdrop-blur border border-slate-200 shadow-sm rounded-2xl p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">Conta</h2>
-          {user ? (
-            <span className="text-sm px-2 py-1 rounded-full bg-green-50 border border-green-200 text-green-700">logado</span>
-          ) : (
-            <span className="text-sm px-2 py-1 rounded-full bg-slate-50 border border-slate-200 text-slate-600">offline</span>
-          )}
+    <div className="rounded-2xl p-4 bg-slate-100 border border-slate-300 shadow-xl flex flex-col gap-4">
+      {/* Cabeçalho com mini ilustração temática */}
+      <div className="flex justify-between gap-4">
+        <div className="flex-1">
+          <div className="font-semibold text-slate-900 text-sm">
+            Conta e Arquivos
+          </div>
+          <div className="text-[11px] text-slate-600">
+            Faça login para salvar imagens, testar o OCR em diferentes documentos
+            e acessar seus arquivos depois.
+          </div>
         </div>
 
-        {!user && (
-          <>
-            <div className="mb-3 flex gap-2">
+        {/* “Imagem”/ilustração do tema do sistema */}
+        <div className="hidden md:flex items-center gap-2">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 to-slate-700 flex items-center justify-center text-white text-xs font-bold shadow-md">
+            Tx
+          </div>
+          <div className="flex flex-col gap-1">
+            <div className="w-16 h-2 rounded-full bg-slate-300" />
+            <div className="w-10 h-2 rounded-full bg-slate-200" />
+            <div className="w-14 h-2 rounded-full bg-cyan-300/80" />
+          </div>
+        </div>
+
+        {user && (
+          <button
+            className="text-[11px] text-slate-600 hover:text-red-500 ml-2"
+            type="button"
+            onClick={doLogout}
+          >
+            Sair
+          </button>
+        )}
+      </div>
+
+      {/* Área de login/cadastro */}
+      {!user && (
+        <div className="rounded-xl bg-white border border-slate-200 p-3 mt-1">
+          <form
+            onSubmit={doLogin}
+            className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end"
+          >
+            <Field
+              label="Nome (opcional)"
+              name="name"
+              value={form.name}
+              onChange={onChange}
+              placeholder="Seu nome"
+            />
+
+            <Field
+              label="E-mail"
+              name="email"
+              type="email"
+              value={form.email}
+              onChange={onChange}
+              placeholder="voce@exemplo.com"
+            />
+
+            <Field
+              label="Senha"
+              name="password"
+              type="password"
+              value={form.password}
+              onChange={onChange}
+              placeholder="mínimo 8 caracteres"
+            />
+
+            <div className="flex gap-2 mt-2">
               <button
-                className={`px-3 py-1.5 rounded-lg border ${
-                  tab === "login" ? "bg-slate-900 text-white border-slate-900" : "bg-white"
-                }`}
-                onClick={() => setTab("login")}
+                type="submit"
+                className="px-3 py-2 rounded-lg text-xs font-semibold bg-slate-900 text-slate-50 hover:bg-slate-800 transition"
               >
                 Entrar
               </button>
+
               <button
-                className={`px-3 py-1.5 rounded-lg border ${
-                  tab === "register" ? "bg-slate-900 text-white border-slate-900" : "bg-white"
-                }`}
-                onClick={() => setTab("register")}
+                type="button"
+                onClick={doRegister}
+                className="px-3 py-2 rounded-lg text-xs font-semibold border border-slate-400 text-slate-800 hover:bg-slate-100 transition"
               >
                 Criar conta
               </button>
             </div>
+          </form>
 
-            <form onSubmit={tab === "login" ? doLogin : doRegister} className="space-y-3">
-              {tab === "register" && (
-                <Field
-                  label="Nome"
-                  placeholder="Seu nome"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                />
-              )}
-              <Field
-                label="Email"
-                type="email"
-                placeholder="voce@exemplo.com"
-                value={form.email}
-                onChange={(e) => setForm({ ...form, email: e.target.value })}
-              />
-              <Field
-                label="Senha"
-                type="password"
-                placeholder="•••••••"
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-              />
-              <button className="px-4 py-2 rounded-lg bg-black text-white border border-black">
-                {tab === "login" ? "Entrar" : "Registrar"}
-              </button>
-            </form>
-          </>
-        )}
-
-        {user && (
-          <div className="space-y-2">
-            <div className="text-sm text-slate-600">Logado como</div>
-            <div className="font-medium">{user.name || "Usuário"}</div>
-            <div className="text-sm text-slate-600">{user.email}</div>
-            <button onClick={doLogout} className="mt-3 px-4 py-2 rounded-lg border">
-              Sair
-            </button>
-          </div>
-        )}
-
-        {msg && <p className="mt-4 text-sm text-slate-700">{msg}</p>}
-      </div>
-
-      {/* Coluna direita: Upload + lista */}
-      <div className="bg-white/80 backdrop-blur border border-slate-200 shadow-sm rounded-2xl p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">Arquivos</h2>
-          {user ? (
-            <span className="text-sm text-slate-500">seus uploads</span>
-          ) : (
-            <span className="text-sm text-slate-500">entre para enviar</span>
-          )}
-        </div>
-
-        {!user ? (
-          <p className="text-sm text-slate-600">Faça login para enviar e listar arquivos.</p>
-        ) : (
-          <>
-            <input type="file" onChange={onUpload} className="block mb-4" />
-            <div className="overflow-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-slate-500 border-b">
-                    <th className="py-2 pr-2">Nome</th>
-                    <th className="py-2 pr-2">Tamanho</th>
-                    <th className="py-2 pr-2">Ação</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.map((row) => (
-                    <tr key={row.id} className="border-b last:border-0">
-                      <td className="py-2 pr-2">{row.originalName}</td>
-                      <td className="py-2 pr-2">{(row.size / 1024).toFixed(1)} KB</td>
-                      <td className="py-2 pr-2 space-x-3">
-                        <a
-                          href={files.url(row.id)}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="underline"
-                        >
-                          abrir
-                        </a>
-                        <button
-                          className="px-2 py-1 border rounded disabled:opacity-50"
-                          disabled={!isImgName(row.originalName)}
-                          onClick={() => onUseInOCR?.(row)}
-                          title={
-                            isImgName(row.originalName)
-                              ? "Carregar este arquivo na tela de OCR"
-                              : "Somente imagens (PNG/JPG/WEBP) podem ir direto para o OCR"
-                          }
-                        >
-                          Usar no OCR
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {!list.length && (
-                    <tr>
-                      <td className="py-2 text-slate-500" colSpan={3}>
-                        Nenhum arquivo enviado.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+          {msg && (
+            <div className="mt-2 text-[11px] text-slate-700">
+              {msg}
             </div>
-          </>
-        )}
-      </div>
+          )}
+
+          <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-500">
+            <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-200 text-[10px] font-bold text-slate-700">
+              i
+            </span>
+            Seus dados são usados apenas para este protótipo local de OCR.
+          </div>
+        </div>
+      )}
+
+      {/* Área de arquivos (quando logado) */}
+      {user && (
+        <div className="rounded-xl bg-white border border-slate-200 p-3 mt-1 flex flex-col gap-3">
+          <div className="flex justify-between items-center gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-900">
+                Olá, {user.name || user.email}
+              </div>
+              <div className="text-[11px] text-slate-600">
+                Envie imagens (JPG, PNG, WEBP) para usar depois no OCR.
+              </div>
+            </div>
+
+            <label className="cursor-pointer text-[11px] px-3 py-2 rounded-lg bg-cyan-500 text-slate-900 font-semibold hover:bg-cyan-400 transition shadow-sm">
+              {uploading ? "Enviando..." : "Enviar arquivo"}
+              <input
+                type="file"
+                className="hidden"
+                onChange={onUpload}
+                disabled={uploading}
+              />
+            </label>
+          </div>
+
+          {msg && (
+            <div className="text-[11px] text-slate-700">
+              {msg}
+            </div>
+          )}
+
+          <div className="mt-1 overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-200">
+                  <th className="py-1 pr-2 font-medium">Nome</th>
+                  <th className="py-1 pr-2 font-medium">Tipo</th>
+                  <th className="py-1 pr-2 font-medium">Ações</th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((f) => (
+                  <tr key={f.id} className="border-b border-slate-100 last:border-0">
+                    <td className="py-1 pr-2">
+                      <div
+                        className="max-w-xs truncate text-slate-900"
+                        title={f.filename}
+                      >
+                        {f.filename}
+                      </div>
+                    </td>
+                    <td className="py-1 pr-2 text-slate-500">
+                      {f.mime}
+                    </td>
+                    <td className="py-1 pr-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="text-[11px] text-cyan-600 hover:underline"
+                        onClick={() =>
+                          onUseInOCR({
+                            id: f.id,
+                            filename: f.filename,
+                            mime: f.mime,
+                            isImage: isImgName(f.filename),
+                          })
+                        }
+                      >
+                        Usar no OCR
+                      </button>
+                      <button
+                        type="button"
+                        className="text-[11px] text-red-500 hover:underline"
+                        onClick={() => onDelete(f.id)}
+                      >
+                        Excluir
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {list.length === 0 && (
+                  <tr>
+                    <td className="py-2 text-slate-500" colSpan={3}>
+                      Nenhum arquivo enviado ainda.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mini “imagem” do sistema na parte de baixo */}
+          <div className="mt-2 flex items-center gap-3 text-[11px] text-slate-500">
+            <div className="flex gap-1">
+              <div className="w-6 h-6 rounded-md bg-slate-200 flex items-center justify-center text-[10px] text-slate-700">
+                JPG
+              </div>
+              <div className="w-6 h-6 rounded-md bg-slate-200 flex items-center justify-center text-[10px] text-slate-700">
+                PNG
+              </div>
+              <div className="w-6 h-6 rounded-md bg-slate-200 flex items-center justify-center text-[10px] text-slate-700">
+                WEBP
+              </div>
+            </div>
+            <span>Formatos recomendados para melhor resultado no OCR.</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

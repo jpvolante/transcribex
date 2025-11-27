@@ -19,10 +19,17 @@ export const files = {
   upload: (file) => {
     const form = new FormData();
     form.append("file", file);
-    return api.post("/files", form, {
-      headers: { "Content-Type": "multipart/form-data" },
-    }).then(r => r.data);
+    return api
+      .post("/files", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then((r) => r.data);
   },
-  list: () => api.get("/files").then(r => r.data),
-  url:  (id) => `${api.defaults.baseURL}/files/${id}`,
+
+  list: () => api.get("/files").then((r) => r.data),
+
+  // URL pública do arquivo (para download/visualização)
+  url: (id) => `${api.defaults.baseURL}/files/${id}`,
+
+  remove: (id) => api.delete(`/files/${id}`).then((r) => r.data),
 };

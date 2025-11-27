@@ -1,662 +1,945 @@
+// src/App.js
 import React, { useRef, useState, useEffect } from "react";
 import * as Tesseract from "tesseract.js";
 import Account from "./Account";
 import { files as filesApi } from "./api";
 
 // -----------------------------------------------------------------------------
-// TRANSCRIBEX – SPA + OCR (Tesseract.js) – manuscritos turbo (Sauvola/PSM/linhas)
+// TEMA / ESTILO: cinza futurista / tecnológico
 // -----------------------------------------------------------------------------
-
-// Paleta
 const BRAND = {
-  base: "#7B2E2E",
-  baseDark: "#692626",
-  tint: "#F3E5E5",
-  ring: "shadow-[0_0_0_4px_rgba(123,46,46,0.12)]",
+  base: "#111827",      // cinza bem escuro
+  baseDark: "#020617",  // quase preto
+  accent: "#38bdf8",    // ciano (detalhes futuristas)
+  tint: "#0f172a",      // fundo de cards escuros
 };
 
-// UI primitives
-const Card = ({ children, className = "" }) => (
-  <div className={`bg-white/80 backdrop-blur border border-slate-200 shadow-sm rounded-2xl transition-all duration-200 hover:shadow-lg hover:border-slate-300 ${className}`}>{children}</div>
-);
-
-const Section = ({ title, actions, children }) => (
-  <Card className="p-6">
-    <div className="flex items-center justify-between mb-4">
-      <h2 className="text-xl font-semibold tracking-tight" style={{ color: BRAND.base }}>{title}</h2>
-      {actions}
+// Componentes básicos
+const Section = ({ title, children }) => (
+  <section className="rounded-2xl bg-slate-900/40 border border-slate-700/60 p-4 shadow-sm flex flex-col gap-3 backdrop-blur-sm">
+    <div className="flex items-center justify-between gap-2">
+      <h2 className="text-sm font-semibold text-slate-50">{title}</h2>
     </div>
-    <div className="prose max-w-none">{children}</div>
-  </Card>
+    {children}
+  </section>
 );
 
-const Button = ({ children, onClick, type = "button", disabled, variant = "primary" }) => {
-  const base = "px-4 py-2 rounded-xl text-sm font-medium shadow-sm transition border active:scale-[0.98] disabled:opacity-50";
+const Button = ({ children, variant = "ghost", type = "button", onClick, disabled }) => {
+  const base =
+    "inline-flex items-center justify-center rounded-xl text-xs px-3 py-2 border transition disabled:opacity-60 disabled:cursor-not-allowed";
   const styles =
     variant === "primary"
-      ? { class: `text-white`, style: { background: BRAND.base, borderColor: BRAND.base } }
+      ? {
+          class: "text-white shadow-[0_0_0_1px_rgba(148,163,184,0.4)]",
+          style: {
+            background: `linear-gradient(135deg, ${BRAND.accent}, ${BRAND.base})`,
+            borderColor: BRAND.accent,
+          },
+        }
       : variant === "outline"
-      ? { class: `bg-transparent`, style: { color: BRAND.base, borderColor: BRAND.base } }
-      : { class: `bg-white text-slate-700 hover:bg-slate-50 border-slate-200` };
+      ? {
+          class: "bg-transparent text-slate-100 hover:bg-slate-800/70",
+          style: { borderColor: BRAND.accent },
+        }
+      : {
+          class: "bg-slate-900/60 text-slate-100 hover:bg-slate-800/70 border-slate-700",
+          style: {},
+        };
+
   return (
-    <button type={type} disabled={disabled} onClick={onClick} className={`${base} ${styles.class}`} style={styles.style}>
+    <button
+      type={type}
+      disabled={disabled}
+      onClick={onClick}
+      className={`${base} ${styles.class}`}
+      style={styles.style}
+    >
       {children}
     </button>
   );
 };
 
 const Tag = ({ children }) => (
-  <span className="px-2 py-1 rounded-full text-xs border" style={{ background: BRAND.tint, color: BRAND.base, borderColor: `${BRAND.base}33` }}>
+  <span className="px-2 py-1 rounded-full text-[10px] border border-slate-600 bg-slate-900/80 text-slate-200">
     {children}
   </span>
 );
 
-// -----------------------------------------------------------------------------
-// Utils
-// -----------------------------------------------------------------------------
-const ACCEPTED_TYPES = ["application/pdf"];
-const isImage = (f) => f?.type?.startsWith("image/");
-
-function bytesToSize(bytes) {
-  if (bytes === 0) return "0 B";
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${sizes[i]}`;
+// Util: checa se file é imagem
+function isImage(file) {
+  return file && /^image\//.test(file.type);
 }
 
-function downloadTxt(filename, content) {
-  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = (filename || "transcricao") + ".txt";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
+// -----------------------------------------------------------------------------
+// Pré-processamento de imagem (crop + binarização + canal + inversão + skew)
+// -----------------------------------------------------------------------------
+async function preprocessImageToCanvas(file, opts) {
+  const { crop, binarize, channel, invert, skew } = opts;
 
-// Image loader (respeita EXIF quando possível)
-async function loadImageFromFile(file) {
-  if (window.createImageBitmap) {
-    try {
-      const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
-      const c = document.createElement("canvas");
-      c.width = bitmap.width; c.height = bitmap.height;
-      const cx = c.getContext("2d");
-      cx.drawImage(bitmap, 0, 0);
-      const img = new Image();
-      img.src = c.toDataURL();
-      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
-      return img;
-    } catch {}
-  }
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = URL.createObjectURL(file);
+    const url = URL.createObjectURL(file);
+
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        const ctx = canvas.getContext("2d");
+
+        const w = img.naturalWidth;
+        const h = img.naturalHeight;
+
+        const leftPx = Math.round((crop.left / 100) * w);
+        const rightPx = Math.round((crop.right / 100) * w);
+        const topPx = Math.round((crop.top / 100) * h);
+        const bottomPx = Math.round((crop.bottom / 100) * h);
+
+        const cw = w - leftPx - rightPx;
+        const ch = h - topPx - bottomPx;
+
+        canvas.width = cw;
+        canvas.height = ch;
+
+        ctx.drawImage(img, leftPx, topPx, cw, ch, 0, 0, cw, ch);
+
+        // Skew simples (rotação)
+        if (skew && Math.abs(skew) > 0.1) {
+          const rad = (skew * Math.PI) / 180;
+          const rotated = document.createElement("canvas");
+          const rctx = rotated.getContext("2d");
+          rotated.width = cw;
+          rotated.height = ch;
+          rctx.translate(cw / 2, ch / 2);
+          rctx.rotate(rad);
+          rctx.drawImage(canvas, -cw / 2, -ch / 2);
+          canvas.width = cw;
+          canvas.height = ch;
+          ctx.clearRect(0, 0, cw, ch);
+          ctx.drawImage(rotated, 0, 0);
+        }
+
+        let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let data = imageData.data;
+
+        // Seleção de canal
+        if (channel !== "auto") {
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            let v = 0;
+            if (channel === "r") v = r;
+            else if (channel === "g") v = g;
+            else if (channel === "b") v = b;
+            data[i] = data[i + 1] = data[i + 2] = v;
+          }
+        }
+
+        // Binarização simples (Otsu) ou adaptativa (Sauvola aproximado)
+        if (binarize !== "none") {
+          const gray = new Uint8ClampedArray(data.length / 4);
+          for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+            gray[j] = data[i];
+          }
+
+          if (binarize === "otsu") {
+            const hist = new Array(256).fill(0);
+            for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
+
+            const total = gray.length;
+            let sum = 0;
+            for (let t = 0; t < 256; t++) sum += t * hist[t];
+
+            let sumB = 0;
+            let wB = 0;
+            let maxVar = 0;
+            let thresh = 127;
+
+            for (let t = 0; t < 256; t++) {
+              wB += hist[t];
+              if (wB === 0) continue;
+              const wF = total - wB;
+              if (wF === 0) break;
+              sumB += t * hist[t];
+              const mB = sumB / wB;
+              const mF = (sum - sumB) / wF;
+              const varBetween = wB * wF * (mB - mF) * (mB - mF);
+              if (varBetween > maxVar) {
+                maxVar = varBetween;
+                thresh = t;
+              }
+            }
+
+            for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+              const v = gray[j] > thresh ? 255 : 0;
+              data[i] = data[i + 1] = data[i + 2] = v;
+            }
+          } else if (binarize === "sauvola") {
+            const wSize = 25;
+            const k = 0.2;
+            const out = new Uint8ClampedArray(gray.length);
+            const width = canvas.width;
+            const height = canvas.height;
+
+            function idx(x, y) {
+              return y * width + x;
+            }
+
+            for (let y = 0; y < height; y++) {
+              for (let x = 0; x < width; x++) {
+                let sumLocal = 0;
+                let sumSq = 0;
+                let count = 0;
+                for (let dy = -wSize; dy <= wSize; dy++) {
+                  for (let dx = -wSize; dx <= wSize; dx++) {
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+                    const val = gray[idx(nx, ny)];
+                    sumLocal += val;
+                    sumSq += val * val;
+                    count++;
+                  }
+                }
+                const mean = sumLocal / count;
+                const varLocal = sumSq / count - mean * mean;
+                const std = Math.sqrt(Math.max(0, varLocal));
+                const R = 128;
+                const thresh = mean * (1 + k * ((std / R) - 1));
+                out[idx(x, y)] = gray[idx(x, y)] > thresh ? 255 : 0;
+              }
+            }
+
+            for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+              const v = out[j];
+              data[i] = data[i + 1] = data[i + 2] = v;
+            }
+          }
+
+          imageData.data.set(data);
+          ctx.putImageData(imageData, 0, 0);
+        }
+
+        // Inversão final
+        if (invert) {
+          imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          data = imageData.data;
+          for (let i = 0; i < data.length; i += 4) {
+            data[i] = 255 - data[i];
+            data[i + 1] = 255 - data[i + 1];
+            data[i + 2] = 255 - data[i + 2];
+          }
+          ctx.putImageData(imageData, 0, 0);
+        }
+
+        URL.revokeObjectURL(url);
+        resolve(canvas);
+      } catch (e) {
+        URL.revokeObjectURL(url);
+        reject(e);
+      }
+    };
+
+    img.onerror = (e) => {
+      URL.revokeObjectURL(url);
+      reject(e);
+    };
+
+    img.src = url;
   });
 }
 
-// Otsu
-function otsuThreshold(hist, total) {
-  let sum = 0; for (let t = 0; t < 256; t++) sum += t * hist[t];
-  let sumB = 0, wB = 0, wF = 0, varMax = 0, threshold = 127;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t]; if (wB === 0) continue;
-    wF = total - wB; if (wF === 0) break;
-    sumB += t * hist[t];
-    const mB = sumB / wB, mF = (sum - sumB) / wF;
-    const between = wB * wF * (mB - mF) * (mB - mF);
-    if (between > varMax) { varMax = between; threshold = t; }
-  }
-  return threshold;
-}
-
-/**
- * Pré-processamento poderoso para manuscritos
- */
-async function preprocessImageToCanvas(file, { crop, binarize, channel, invert, skew }) {
-  const img = await loadImageFromFile(file);
-
-  const maxW = 2200;
-  const scale = img.width > maxW ? maxW / img.width : 1;
-  const W = Math.round(img.width * scale);
-  const H = Math.round(img.height * scale);
-
-  const src = document.createElement("canvas");
-  src.width = W; src.height = H;
-  const sctx = src.getContext("2d");
-  sctx.drawImage(img, 0, 0, W, H);
-
-  // cortes %
-  const x0 = Math.round((crop.left / 100) * W);
-  const y0 = Math.round((crop.top / 100) * H);
-  const x1 = Math.round(W - (crop.right / 100) * W);
-  const y1 = Math.round(H - (crop.bottom / 100) * H);
-  const sw = Math.max(1, x1 - x0);
-  const sh = Math.max(1, y1 - y0);
-
-  const dst = document.createElement("canvas");
-  dst.width = sw; dst.height = sh;
-  const dctx = dst.getContext("2d");
-
-  // deskew
-  if (skew !== 0) {
-    dctx.translate(sw / 2, sh / 2);
-    dctx.rotate((skew * Math.PI) / 180);
-    dctx.translate(-sw / 2, -sh / 2);
-  }
-  dctx.drawImage(src, x0, y0, sw, sh, 0, 0, sw, sh);
-
-  if (binarize === "none") {
-    if (invert) {
-      const im = dctx.getImageData(0, 0, sw, sh), a = im.data;
-      for (let i = 0; i < a.length; i += 4) { a[i] = 255 - a[i]; a[i + 1] = 255 - a[i + 1]; a[i + 2] = 255 - a[i + 2]; }
-      dctx.putImageData(im, 0, 0);
-    }
-    return dst;
-  }
-
-  // cinza a partir do canal
-  const im = dctx.getImageData(0, 0, sw, sh);
-  const a = im.data;
-  const gray = new Uint8ClampedArray(sw * sh);
-  for (let i = 0, p = 0; i < a.length; i += 4, p++) {
-    let g;
-    if (channel === "r") g = a[i];
-    else if (channel === "g") g = a[i + 1];
-    else if (channel === "b") g = a[i + 2];
-    else g = 0.299 * a[i] + 0.587 * a[i + 1] + 0.114 * a[i + 2];
-    gray[p] = g;
-  }
-
-  if (binarize === "otsu") {
-    const hist = new Uint32Array(256);
-    for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
-    const t = otsuThreshold(hist, gray.length);
-    for (let p = 0, j = 0; p < a.length; p += 4, j++) {
-      const v = gray[j] <= t ? 0 : 255;
-      a[p] = a[p + 1] = a[p + 2] = invert ? 255 - v : v;
-      a[p + 3] = 255;
-    }
-  } else {
-    // Sauvola (janela 25, k=0.34)
-    const win = 25, r = (win - 1) >> 1, k = 0.34, R = 128;
-    const S = new Float32Array((sw + 1) * (sh + 1));
-    const SQ = new Float32Array((sw + 1) * (sh + 1));
-    const idx = (x, y) => y * (sw + 1) + x;
-    for (let y = 1, i = 0; y <= sh; y++) {
-      let row = 0, rowQ = 0;
-      for (let x = 1; x <= sw; x++, i++) {
-        row += gray[i];
-        rowQ += gray[i] * gray[i];
-        S[idx(x, y)] = S[idx(x, y - 1)] + row;
-        SQ[idx(x, y)] = SQ[idx(x, y - 1)] + rowQ;
-      }
-    }
-    const area = (x0, y0, x1, y1) => (x1 - x0) * (y1 - y0);
-    const sum = (I, x0, y0, x1, y1) => I[idx(x1, y1)] - I[idx(x0, y1)] - I[idx(x1, y0)] + I[idx(x0, y0)];
-    for (let y = 0; y < sh; y++) {
-      for (let x = 0; x < sw; x++) {
-        const xA = Math.max(0, x - r), yA = Math.max(0, y - r);
-        const xB = Math.min(sw, x + r + 1), yB = Math.min(sh, y + r + 1);
-        const A = area(xA, yA, xB, yB);
-        const m = sum(S, xA, yA, xB, yB) / A;
-        const sq = sum(SQ, xA, yA, xB, yB) / A;
-        const v = Math.sqrt(Math.max(0, sq - m * m));
-        const T = m * (1 + k * ((v / R) - 1));
-        const g = gray[y * sw + x];
-        const bin = g < T ? 0 : 255;
-        const p = (y * sw + x) * 4;
-        a[p] = a[p + 1] = a[p + 2] = invert ? 255 - bin : bin;
-        a[p + 3] = 255;
-      }
-    }
-  }
-  dctx.putImageData(im, 0, 0);
-  return dst;
-}
-
-// OCR em faixas horizontais (linhas largas) com PSM 7
+// -----------------------------------------------------------------------------
+// OCR em faixas horizontais (modo linha / manuscrito)
+// -----------------------------------------------------------------------------
 async function recognizeInStrips(file, opts, lang, setProgress) {
-  const strips = 12, overlap = 0.02; // 12 tiras, 2% sobreposição
-  let out = "", processed = 0;
+  const strips = 8;          // menos faixas
+  const overlap = 0.08;      // mais sobreposição
+  let out = "";
+  let processed = 0;
 
   for (let i = 0; i < strips; i++) {
     const seg = { ...opts.crop };
     const hFrac = 1 / strips;
+
     seg.top = Math.round(100 * (i * hFrac));
     seg.bottom = Math.round(100 * (1 - (i + 1) * hFrac));
+
     if (i > 0) seg.top -= overlap * 100;
     if (i < strips - 1) seg.bottom -= overlap * 100;
 
     const canvas = await preprocessImageToCanvas(file, { ...opts, crop: seg });
-    const { data } = await Tesseract.recognize(canvas, lang, { tessedit_pageseg_mode: 7, logger: (m) => {
-      if (m.status === "recognizing text" && m.progress != null) {
-        setProgress(Math.min(99, Math.round(((i + m.progress) / strips) * 100)));
-      }
-    }});
-    out += data.text.trim() + "\n";
+
+    const { data } = await Tesseract.recognize(canvas, lang, {
+      tessedit_pageseg_mode: 7, // linha única
+      logger: (m) => {
+        if (m.status === "recognizing text" && m.progress != null) {
+          setProgress(
+            Math.min(99, Math.round(((i + m.progress) / strips) * 100))
+          );
+        }
+      },
+    });
+
+    out += (data.text || "").trim() + "\n";
     processed++;
     setProgress(Math.round((processed / strips) * 100));
   }
+
   return out;
 }
 
 // -----------------------------------------------------------------------------
-// App
+// App principal
 // -----------------------------------------------------------------------------
 export default function App() {
   const [route, setRoute] = useState("home");
   const [file, setFile] = useState(null);
   const [fileUrl, setFileUrl] = useState("");
-  const [transcription, setTranscription] = useState("");
-  const [status, setStatus] = useState("idle");
+  const [status, setStatus] = useState("idle"); // idle | ready | transcribing
   const [error, setError] = useState("");
+  const [transcription, setTranscription] = useState("");
   const [progress, setProgress] = useState(0);
+
+  // opções
   const [lang, setLang] = useState("por");
-  const [enhance, setEnhance] = useState(true);
-  const [cropTopPct, setCropTopPct] = useState(40); // compat
-  const [docMode, setDocMode] = useState("typed"); // 'typed' | 'hand'
+  const [enhance, setEnhance] = useState(true);       // melhorar imagem (impresso + manuscrito)
+  const [docMode, setDocMode] = useState("typed");    // 'typed' | 'hand'
 
   // estados avançados (manuscrito)
-  const [crop, setCrop] = useState({ top: 35, bottom: 5, left: 5, right: 5 }); // %
+  const [crop, setCrop] = useState({ top: 35, bottom: 5, left: 5, right: 5 });
   const [binarize, setBinarize] = useState("sauvola"); // 'sauvola' | 'otsu' | 'none'
   const [channel, setChannel] = useState("auto");      // 'auto' | 'r' | 'g' | 'b'
   const [invert, setInvert] = useState(false);
-  const [skew, setSkew] = useState(0);                 // graus
-  const [psm, setPsm] = useState(6);                   // 6 bloco, 7 linha…
-  const [lineMode, setLineMode] = useState(false);     // OCR por faixas
+  const [skew, setSkew] = useState(0);
+  const [psm, setPsm] = useState(7);                   // manuscrito: default 7 (linha)
+  const [lineMode, setLineMode] = useState(true);      // OCR por faixas
 
-  useEffect(() => () => { if (fileUrl) URL.revokeObjectURL(fileUrl); }, [fileUrl]);
+  useEffect(() => {
+    return () => {
+      if (fileUrl) URL.revokeObjectURL(fileUrl);
+    };
+  }, [fileUrl]);
 
-  function handleSelectFile(e) {
+  const inputRef = useRef(null);
+
+  function onSelectFile(e) {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (!isImage(f)) {
+      setError("O OCR local funciona com imagens (PNG/JPG/JPEG/WEBP). Para PDF, exporte como imagem.");
+      return;
+    }
     setError("");
-    const f = e?.target?.files?.[0];
-    if (!f) return;
-    const isPdf = ACCEPTED_TYPES.includes(f.type);
-    const isImg = isImage(f);
-    if (!isPdf && !isImg) { setError("Formato não suportado. Envie PDF ou imagem (PNG/JPG/JPEG/WEBP)."); return; }
+    setFile(f);
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
     const url = URL.createObjectURL(f);
-    setFile(f); setFileUrl(url); setStatus("ready"); setTranscription(""); setRoute("doc");
+    setFileUrl(url);
+    setStatus("ready");
+    setTranscription("");
+    setProgress(0);
   }
 
-  function handleDrop(e) {
-    e.preventDefault();
-    const f = e.dataTransfer.files?.[0];
-    if (!f) return;
-    const isPdf = ACCEPTED_TYPES.includes(f.type);
-    const isImg = isImage(f);
-    if (!isPdf && !isImg) { setError("Formato não suportado. Envie PDF ou imagem (PNG/JPG/JPEG/WEBP)."); return; }
-    const url = URL.createObjectURL(f);
-    setFile(f); setFileUrl(url); setStatus("ready"); setTranscription(""); setRoute("doc");
+  function clearDoc() {
+    setFile(null);
+    setFileUrl("");
+    setTranscription("");
+    setStatus("idle");
+    setError("");
+    setProgress(0);
+    setRoute("home");
   }
 
-  // OCR
+async function handleUseUploadedInOCR(row) {
+  try {
+    setError("");
+    setStatus("ready");
+    setTranscription("");
+    setProgress(0);
+
+    // 1) baixar o arquivo do servidor (usando o id)
+    const url = filesApi.url(row.id);
+    const res = await fetch(url, { credentials: "include" });
+
+    if (!res.ok) {
+      throw new Error("HTTP " + res.status);
+    }
+
+    const blob = await res.blob();
+
+    // 2) garantir que é imagem
+    if (!/^image\//.test(blob.type || "")) {
+      setError(
+        "Este arquivo não é imagem. Para o OCR local, use PNG, JPG, JPEG ou WEBP."
+      );
+      return;
+    }
+
+    // 3) criar um File a partir do blob (evita problemas no canvas)
+    const fname = row.filename || row.originalName || "documento.png";
+    const fileLike = new File([blob], fname, {
+      type: blob.type || "image/png",
+    });
+
+    // 4) preparar preview e estado
+    if (fileUrl) URL.revokeObjectURL(fileUrl);
+    const objUrl = URL.createObjectURL(fileLike);
+
+    setFile(fileLike);
+    setFileUrl(objUrl);
+    setStatus("ready");
+    // se você tiver algum controle de rota, aqui pode manter na tela principal de OCR
+    // por ex: setRoute("home");
+  } catch (e) {
+    console.error(e);
+    setError(
+      "Falha ao carregar arquivo do servidor para o OCR. Verifique se você ainda está logado e tente novamente."
+    );
+  }
+}
+
+
+  function onPresetBasic() {
+    setDocMode("typed");
+    setEnhance(true);
+  }
+
+  function onPresetHand() {
+    setDocMode("hand");
+    setEnhance(true);
+    setCrop({ top: 35, bottom: 5, left: 5, right: 5 });
+    setBinarize("sauvola");
+    setChannel("auto");
+    setInvert(false);
+    setSkew(0);
+    setPsm(7);
+    setLineMode(true);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lógica de transcrição (melhorada)
+  // ---------------------------------------------------------------------------
   async function handleTranscribe() {
-    if (!file) { setError("Selecione um arquivo antes de transcrever."); return; }
-    if (!isImage(file)) { setError("O OCR funciona apenas com imagens (PNG/JPG/JPEG/WEBP). Para PDF, exporte a página como imagem."); return; }
+    if (!file) {
+      setError("Selecione um arquivo antes de transcrever.");
+      return;
+    }
 
-    setError(""); setStatus("transcribing"); setProgress(0);
+    if (!isImage(file)) {
+      setError(
+        "O OCR funciona apenas com imagens (PNG/JPG/JPEG/WEBP). Para PDF, exporte a página como imagem."
+      );
+      return;
+    }
+
+    setError("");
+    setStatus("transcribing");
+    setProgress(0);
 
     try {
-      if (docMode === "hand" && enhance) {
-        if (lineMode) {
-          const text = await recognizeInStrips(file, { crop, binarize, channel, invert, skew }, lang, setProgress);
-          setTranscription(text);
+      // ---------------------- MANUSCRITO ----------------------
+      if (docMode === "hand") {
+        if (enhance) {
+          if (lineMode) {
+            const text = await recognizeInStrips(
+              file,
+              { crop, binarize, channel, invert, skew },
+              lang,
+              setProgress
+            );
+            setTranscription(text);
+          } else {
+            const canvas = await preprocessImageToCanvas(file, {
+              crop,
+              binarize,
+              channel,
+              invert,
+              skew,
+            });
+
+            const { data } = await Tesseract.recognize(canvas, lang, {
+              tessedit_pageseg_mode: psm,
+              logger: (m) => {
+                if (m.status === "recognizing text" && m.progress != null) {
+                  setProgress(Math.round(m.progress * 100));
+                }
+              },
+            });
+
+            setTranscription(data.text || "");
+          }
         } else {
-          const canvas = await preprocessImageToCanvas(file, { crop, binarize, channel, invert, skew });
-          const { data } = await Tesseract.recognize(canvas, lang, {
+          // manuscrito SEM pré-processamento pesado, mas usando PSM escolhido
+          const { data } = await Tesseract.recognize(file, lang, {
             tessedit_pageseg_mode: psm,
-            logger: (m) => { if (m.status === "recognizing text" && m.progress != null) setProgress(Math.round(m.progress * 100)); },
+            logger: (m) => {
+              if (m.status === "recognizing text" && m.progress != null) {
+                setProgress(Math.round(m.progress * 100));
+              }
+            },
           });
+
           setTranscription(data.text || "");
         }
       } else {
-        const { data } = await Tesseract.recognize(file, lang, {
-          tessedit_pageseg_mode: 6,
-          logger: (m) => { if (m.status === "recognizing text" && m.progress != null) setProgress(Math.round(m.progress * 100)); },
-        });
-        setTranscription(data.text || "");
+        // ---------------------- IMPRESSO ----------------------
+        if (enhance) {
+          // Pré-processamento simples para textos impressos: Otsu + crop 0
+          const canvas = await preprocessImageToCanvas(file, {
+            crop: { top: 0, bottom: 0, left: 0, right: 0 },
+            binarize: "otsu",
+            channel: "auto",
+            invert: false,
+            skew: 0,
+          });
+
+          const { data } = await Tesseract.recognize(canvas, lang, {
+            tessedit_pageseg_mode: 6,
+            logger: (m) => {
+              if (m.status === "recognizing text" && m.progress != null) {
+                setProgress(Math.round(m.progress * 100));
+              }
+            },
+          });
+
+          setTranscription(data.text || "");
+        } else {
+          const { data } = await Tesseract.recognize(file, lang, {
+            tessedit_pageseg_mode: 6,
+            logger: (m) => {
+              if (m.status === "recognizing text" && m.progress != null) {
+                setProgress(Math.round(m.progress * 100));
+              }
+            },
+          });
+          setTranscription(data.text || "");
+        }
       }
     } catch (e) {
       console.error(e);
-      setError("Falha ao transcrever a imagem. Tente ajustar as opções ou outra imagem.");
+      setError(
+        "Falha ao transcrever a imagem. Tente ajustar as opções ou testar outra imagem."
+      );
     } finally {
       setStatus("ready");
     }
   }
 
-  function clearDoc() {
-    setFile(null); setFileUrl(""); setTranscription(""); setStatus("idle"); setError(""); setProgress(0); setRoute("home");
-  }
+  const isBusy = status === "transcribing";
 
-  // baixar arquivo do backend e abrir no OCR
-  async function handleUseUploadedInOCR(row) {
-    try {
-      setError("");
-      setStatus("ready");
-      setTranscription("");
-
-      // 1) baixa como blob (com cookie)
-      const url = filesApi.url(row.id);
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) throw new Error("Falha ao baixar arquivo");
-      const blob = await res.blob();
-
-      // 2) cria um File a partir do Blob (evita CORS/taint em canvas)
-      const fname = row.originalName || "arquivo";
-      const fileLike = new File([blob], fname, { type: blob.type || "application/octet-stream" });
-
-      // 3) prepara preview e estado
-      if (fileUrl) URL.revokeObjectURL(fileUrl);
-      const objUrl = URL.createObjectURL(fileLike);
-
-      setFile(fileLike);
-      setFileUrl(objUrl);
-      setRoute("doc");
-
-      // Se quiser iniciar o OCR automaticamente, descomente:
-      // await handleTranscribe();
-    } catch (e) {
-      console.error(e);
-      setError("Não consegui abrir o arquivo no OCR. Tente novamente.");
-    }
-  }
-
-  const Nav = (
-    <nav className="sticky top-0 z-10 border-b" style={{ borderColor: BRAND.base, background: "linear-gradient(90deg, rgba(123,46,46,0.96) 0%, rgba(105,38,38,0.96) 100%)" }}>
-      <div className="max-w-5xl mx-auto px-4">
-        <div className="flex items-center justify-between h-14">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-xl grid place-content-center font-bold" style={{ background: "white", color: BRAND.base }}>TX</div>
-            <div className="text-white font-semibold tracking-tight">TRANSCRIBEX</div>
-          </div>
-          <div className="flex items-center gap-2">
-            {[
-              ["home", "Início"],
-              ["doc", "Documento / Transcrição"],
-              ["about", "Sobre o sistema"],
-              ["docs", "Sobre documentos"],
-              ["account", "Conta"],
-            ].map(([r, label]) => (
-              <button
-                key={r}
-                onClick={() => setRoute(r)}
-                className={`px-3 py-1.5 rounded-lg text-sm transition ${route === r ? "bg-white text-slate-900" : "text-white hover:bg-white/10"}`}
-                style={route === r ? { color: BRAND.base } : undefined}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </nav>
-  );
-
+  // ---------------------------------------------------------------------------
+  // Layout
+  // ---------------------------------------------------------------------------
   return (
-    <div className="min-h-screen text-slate-800" style={{ background: "radial-gradient(1200px 600px at 20% -10%, #f7ecec 0%, transparent 60%), radial-gradient(1200px 600px at 100% 0%, #f6f6f6 0%, transparent 40%), linear-gradient(#fafafa,#f7f7f7)" }}>
-      {Nav}
-      <main className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6">
-        {route === "home" && <Home onSelectFile={handleSelectFile} onDrop={handleDrop} error={error} />}
-
-        {route === "doc" && (
-          <DocumentTranscribe
-            file={file} fileUrl={fileUrl}
-            status={status} progress={progress}
-            transcription={transcription}
-            onTranscribe={handleTranscribe}
-            onClear={clearDoc}
-            setTranscription={setTranscription}
-            // básicos
-            enhance={enhance} setEnhance={setEnhance}
-            lang={lang} setLang={setLang}
-            cropTopPct={cropTopPct} setCropTopPct={setCropTopPct}
-            docMode={docMode} setDocMode={setDocMode}
-            // avançados manuscrito
-            crop={crop} setCrop={setCrop}
-            binarize={binarize} setBinarize={setBinarize}
-            channel={channel} setChannel={setChannel}
-            invert={invert} setInvert={setInvert}
-            skew={skew} setSkew={setSkew}
-            psm={psm} setPsm={setPsm}
-            lineMode={lineMode} setLineMode={setLineMode}
-          />
-        )}
-
-        {route === "about" && <AboutSystem />}
-        {route === "docs" && <AboutDocuments />}
-        {route === "account" && <Account onUseInOCR={handleUseUploadedInOCR} />}
-      </main>
-      <footer className="max-w-5xl mx-auto px-4 py-10 text-xs text-slate-500 text-center">
-        <div className="inline-flex items-center gap-2 px-3 py-2 rounded-full border bg-white/70 backdrop-blur">
-          <span>🖋️</span>
-          <span>Protótipo – OCR local com Tesseract.js. Para manuscritos difíceis, use “Manuscrito” + Sauvola/linhas.</span>
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Screens
-// -----------------------------------------------------------------------------
-function Home({ onSelectFile, onDrop, error }) {
-  const inputRef = useRef(null);
-  return (
-    <>
-      <Section title="Bem-vindo ao TRANSCRIBEX">
-        <p>Envie um documento para iniciar. Formatos: <strong>PDF</strong> e <strong>imagens</strong> (PNG/JPG/JPEG/WEBP).</p>
-      </Section>
-
-      <Card className="p-6">
-        <div
-          className={`border-2 border-dashed rounded-2xl p-10 grid place-content-center text-center bg-white/70 hover:bg-white transition cursor-pointer ${BRAND.ring}`}
-          onClick={() => inputRef.current?.click()}
-          onDragOver={(e) => { e.preventDefault(); }}
-          onDrop={onDrop}
-          style={{ borderColor: `${BRAND.base}33` }}
-        >
-          <div className="space-y-3">
-            <div className="text-3xl">📄</div>
-            <div className="text-lg font-medium">Clique ou arraste o arquivo aqui</div>
-            <div className="text-sm text-slate-500">PDF ou imagem</div>
-          </div>
-          <input ref={inputRef} className="hidden" type="file" accept="application/pdf,image/*" onChange={onSelectFile}/>
-        </div>
-        {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
-      </Card>
-    </>
-  );
-}
-
-function DocumentTranscribe({
-  file, fileUrl, transcription, status, progress,
-  onTranscribe, onClear, setTranscription,
-  enhance, setEnhance, lang, setLang, cropTopPct, setCropTopPct,
-  docMode, setDocMode,
-  // novos
-  crop, setCrop, binarize, setBinarize, channel, setChannel,
-  invert, setInvert, skew, setSkew, psm, setPsm, lineMode, setLineMode,
-}) {
-  return (
-    <div className="grid md:grid-cols-2 gap-6">
-      <Card className="p-0 overflow-hidden">
-        <div className="p-4 flex items-center justify-between border-b border-slate-200">
-          <div>
-            <div className="text-sm text-slate-500">Documento</div>
-            <div className="font-medium">{file ? file.name : "Nenhum arquivo"}</div>
-          </div>
-          {file && <Tag>{bytesToSize(file.size)}</Tag>}
-        </div>
-        <div className="aspect-[4/3] bg-slate-100 grid place-content-center">
-          {!file && <span className="text-slate-500 text-sm">Carregue um arquivo para visualizar</span>}
-          {file && file.type === "application/pdf" && (
-            <object data={fileUrl} type="application/pdf" className="w-full h-full">
-              <p className="p-4 text-sm">Pré-visualização de PDF indisponível. <a href={fileUrl} target="_blank" rel="noreferrer" className="underline">Abrir em nova aba</a>.</p>
-            </object>
-          )}
-          {file && isImage(file) && (<img src={fileUrl} alt="Pré-visualização" className="w-full h-full object-contain" />)}
-        </div>
-
-        <div className="p-4 flex items-center gap-3 border-t border-slate-200 flex-wrap">
-          <Button onClick={onTranscribe} disabled={!file || status === "transcribing"}>
-            {status === "transcribing" ? "Transcrevendo…" : "Transcrever"}
-          </Button>
-          <Button variant="ghost" onClick={onClear}>Limpar</Button>
-
-          {status === "transcribing" && (
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-slate-600">Progresso: {progress}%</span>
-              <div className="w-40 h-2 bg-slate-200 rounded-full overflow-hidden">
-                <div className="h-full transition-all" style={{ width: `${progress}%`, background: `linear-gradient(90deg, ${BRAND.base}, ${BRAND.baseDark})` }} />
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-9 h-9 rounded-2xl flex items-center justify-center text-xs font-bold text-white shadow-lg shadow-cyan-500/20 border border-slate-700"
+              style={{
+                background: `radial-gradient(circle at 0 0, ${BRAND.accent}, ${BRAND.baseDark})`,
+              }}
+            >
+              Tx
+            </div>
+            <div>
+              <div className="text-sm font-semibold tracking-wide text-slate-50">
+                Transcribex
+              </div>
+              <div className="text-[11px] text-slate-400">
+                OCR local para documentos históricos – manuscritos e impressos.
               </div>
             </div>
-          )}
-
-          <Button variant="outline" disabled={!transcription.trim()} onClick={() => downloadTxt((file?.name?.replace(/\.\w+$/, "") || "transcricao"), transcription)}>Baixar TXT</Button>
-          <Button variant="outline" disabled={!transcription.trim()} onClick={async () => { try { await navigator.clipboard.writeText(transcription); alert("Transcrição copiada ✅"); } catch { alert("Não foi possível copiar."); } }}>Copiar</Button>
-
-          {/* Básicos */}
-          <div className="flex items-center gap-3 flex-wrap mt-2">
-            <div className="flex items-center gap-2 text-sm text-slate-700">
-              Modo:
-              <label className="flex items-center gap-1"><input type="radio" name="docmode" value="typed" checked={docMode === "typed"} onChange={() => setDocMode("typed")} className="accent-[rgb(123,46,46)]" />Datilografado</label>
-              <label className="flex items-center gap-1"><input type="radio" name="docmode" value="hand" checked={docMode === "hand"} onChange={() => setDocMode("hand")} className="accent-[rgb(123,46,46)]" />Manuscrito</label>
-            </div>
-            <label className="flex items-center gap-2 text-sm text-slate-700">Idioma:
-              <select className="border rounded-lg px-2 py-1 text-sm" value={lang} onChange={(e) => setLang(e.target.value)}>
-                <option value="por">Português (por)</option>
-                <option value="por+eng">Português + Inglês</option>
-                <option value="eng">Inglês (eng)</option>
-              </select>
-            </label>
-            {docMode === "hand" && (
-              <>
-                <label className="flex items-center gap-2 text-sm text-slate-700"><input type="checkbox" className="accent-[rgb(123,46,46)]" checked={enhance} onChange={(e) => setEnhance(e.target.checked)} />Pré-processar</label>
-                <label className="flex items-center gap-2 text-sm text-slate-700">PSM:
-                  <select className="border rounded-lg px-2 py-1 text-sm" value={psm} onChange={(e)=>setPsm(parseInt(e.target.value))}>
-                    <option value={6}>6 (bloco)</option>
-                    <option value={7}>7 (linha)</option>
-                    <option value={3}>3 (auto)</option>
-                    <option value={4}>4 (colunas)</option>
-                  </select>
-                </label>
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input type="checkbox" checked={lineMode} onChange={(e)=>setLineMode(e.target.checked)} className="accent-[rgb(123,46,46)]" />
-                  Ler em faixas
-                </label>
-              </>
-            )}
           </div>
+          <nav className="flex gap-2 text-xs">
+            <button
+              className={`px-2 py-1 rounded-lg ${
+                route === "home"
+                  ? "bg-slate-800 text-slate-50"
+                  : "text-slate-400 hover:bg-slate-900"
+              }`}
+              onClick={() => setRoute("home")}
+            >
+              OCR
+            </button>
+            <button
+              className={`px-2 py-1 rounded-lg ${
+                route === "about"
+                  ? "bg-slate-800 text-slate-50"
+                  : "text-slate-400 hover:bg-slate-900"
+              }`}
+              onClick={() => setRoute("about")}
+            >
+              Sobre
+            </button>
+          </nav>
+        </div>
+      </header>
 
-          {/* Avançados – só mostram em manuscrito */}
-          {docMode === "hand" && (
-            <div className="w-full grid md:grid-cols-2 gap-3 mt-2">
-              <Card className="p-3">
-                <div className="text-xs font-medium mb-2" style={{color: BRAND.base}}>Binarização & Canal</div>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="flex items-center gap-2 text-sm">Binarização:
-                    <select className="border rounded-lg px-2 py-1 text-sm" value={binarize} onChange={(e)=>setBinarize(e.target.value)}>
-                      <option value="sauvola">Sauvola (recom.)</option>
-                      <option value="otsu">Otsu</option>
-                      <option value="none">Nenhuma</option>
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">Canal:
-                    <select className="border rounded-lg px-2 py-1 text-sm" value={channel} onChange={(e)=>setChannel(e.target.value)}>
-                      <option value="auto">Auto</option>
-                      <option value="r">Vermelho</option>
-                      <option value="g">Verde</option>
-                      <option value="b">Azul</option>
-                    </select>
-                  </label>
-                  <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={invert} onChange={(e)=>setInvert(e.target.checked)} className="accent-[rgb(123,46,46)]" />Inverter</label>
+      <main className="max-w-6xl mx-auto px-4 py-4 flex flex-col gap-4">
+        {route === "home" && (
+          <>
+            <div className="grid md:grid-cols-[2fr_1.4fr] gap-4 items-start">
+              <Section title="Seleção da imagem">
+                <div className="flex flex-col gap-3 text-xs">
+                  <div className="flex gap-2 items-center">
+                    <input
+                      ref={inputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={onSelectFile}
+                      className="text-xs text-slate-200 file:text-xs file:px-2 file:py-1 file:rounded-lg file:border-none file:bg-slate-700 file:text-slate-100"
+                    />
+                    {file && (
+                      <Button variant="ghost" onClick={clearDoc}>
+                        Limpar
+                      </Button>
+                    )}
+                  </div>
+                  {file && (
+                    <div className="flex flex-col gap-2">
+                      <div className="text-xs text-slate-300">
+                        <span className="font-medium">Arquivo:</span> {file.name}{" "}
+                        <span className="text-slate-500">
+                          ({Math.round(file.size / 1024)} KB)
+                        </span>
+                      </div>
+                      {fileUrl && (
+                        <div className="border border-slate-700 rounded-xl overflow-hidden bg-slate-900 max-h-80">
+                          <img
+                            src={fileUrl}
+                            alt="preview"
+                            className="w-full h-full object-contain bg-slate-950"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!file && (
+                    <div className="text-xs text-slate-400">
+                      Dica: use uma foto com boa luz, página inteira, sem cortes.
+                    </div>
+                  )}
                 </div>
-              </Card>
+              </Section>
 
-              <Card className="p-3">
-                <div className="text-xs font-medium mb-2" style={{color: BRAND.base}}>Cortes & Deskew</div>
-                <div className="flex flex-col gap-2 text-sm">
-                  <label className="flex items-center gap-2">Topo
-                    <input type="range" min="0" max="60" value={crop.top} onChange={(e)=>setCrop({...crop, top: parseInt(e.target.value)})} className="flex-1 accent-[rgb(123,46,46)]"/>
-                    <span className="w-10 text-right">{crop.top}%</span>
-                  </label>
-                  <label className="flex items-center gap-2">Base
-                    <input type="range" min="0" max="40" value={crop.bottom} onChange={(e)=>setCrop({...crop, bottom: parseInt(e.target.value)})} className="flex-1 accent-[rgb(123,46,46)]"/>
-                    <span className="w-10 text-right">{crop.bottom}%</span>
-                  </label>
-                  <label className="flex items-center gap-2">Esq
-                    <input type="range" min="0" max="40" value={crop.left} onChange={(e)=>setCrop({...crop, left: parseInt(e.target.value)})} className="flex-1 accent-[rgb(123,46,46)]"/>
-                    <span className="w-10 text-right">{crop.left}%</span>
-                  </label>
-                  <label className="flex items-center gap-2">Dir
-                    <input type="range" min="0" max="40" value={crop.right} onChange={(e)=>setCrop({...crop, right: parseInt(e.target.value)})} className="flex-1 accent-[rgb(123,46,46)]"/>
-                    <span className="w-10 text-right">{crop.right}%</span>
-                  </label>
-                  <label className="flex items-center gap-2">Deskew
-                    <input type="range" min="-5" max="5" step="0.5" value={skew} onChange={(e)=>setSkew(parseFloat(e.target.value))} className="flex-1 accent-[rgb(123,46,46)]"/>
-                    <span className="w-10 text-right">{skew}°</span>
-                  </label>
-                </div>
-              </Card>
+              <Account onUseInOCR={handleUseUploadedInOCR} />
             </div>
-          )}
-        </div>
-      </Card>
 
-      <Card className="p-0 overflow-hidden">
-        <div className="p-4 flex items-center justify-between border-b-2" style={{ borderColor: `${BRAND.base}33` }}>
-          <div>
-            <div className="text-sm text-slate-500">Transcrição</div>
-            <div className="font-medium">Resultado automático (editável)</div>
-          </div>
-          <div className="flex gap-2">
-            <Tag>Beta</Tag>
-            <Tag>Somente local</Tag>
-          </div>
-        </div>
-        <div className="p-4">
-          <textarea
-            placeholder="A transcrição aparecerá aqui…"
-            className="w-full h-80 md:h-[28rem] resize-none rounded-xl border border-slate-300 p-4 focus:ring-2 outline-none font-mono leading-6"
-            style={{ boxShadow: "inset 0 1px 0 #fff", caretColor: BRAND.base }}
-            value={transcription}
-            onChange={(e) => setTranscription(e.target.value)}
-          />
-          <p className="mt-2 text-xs text-slate-500 flex items-center gap-3">
-            <span>{transcription ? transcription.trim().split(/\s+/).filter(Boolean).length : 0} palavras</span>
-            <span>•</span>
-            <span>{transcription.length} caracteres</span>
-          </p>
-          <p className="mt-2 text-xs text-slate-500">
-            Dica: Manuscritos → use Sauvola, canal verde, ajuste cortes e teste “Ler em faixas”.
-          </p>
-        </div>
-      </Card>
+            <div className="grid md:grid-cols-[1.4fr_1.8fr] gap-4">
+              <Section title="Configurações de OCR">
+                <div className="flex flex-col gap-3 text-xs">
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <span className="text-[11px] text-slate-400">Idioma:</span>
+                    <select
+                      className="border border-slate-700 bg-slate-900 rounded-lg px-2 py-1 text-xs text-slate-100"
+                      value={lang}
+                      onChange={(e) => setLang(e.target.value)}
+                    >
+                      <option value="por">Português</option>
+                      <option value="eng">Inglês</option>
+                      <option value="spa">Espanhol</option>
+                      <option value="fra">Francês</option>
+                      <option value="lat">Latim</option>
+                    </select>
 
-      <Section title="Comportamento & Regras de Negócio">
-        <p>Para manuscritos, o sistema permite cortes, binarização adaptativa e leitura por faixas para melhorar a acurácia do OCR local.</p>
-      </Section>
+                    <span className="ml-3 text-[11px] text-slate-400">
+                      Tipo de documento:
+                    </span>
+                    <div className="inline-flex rounded-lg border border-slate-700 overflow-hidden">
+                      <button
+                        type="button"
+                        className={`px-2 py-1 text-[11px] ${
+                          docMode === "typed"
+                            ? "bg-slate-100 text-slate-900"
+                            : "text-slate-300"
+                        }`}
+                        onClick={() => setDocMode("typed")}
+                      >
+                        Impresso
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-2 py-1 text-[11px] ${
+                          docMode === "hand"
+                            ? "bg-slate-100 text-slate-900"
+                            : "text-slate-300"
+                        }`}
+                        onClick={() => setDocMode("hand")}
+                      >
+                        Manuscrito
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <span className="text-[11px] text-slate-400">Presets:</span>
+                    <Button variant="ghost" onClick={onPresetBasic}>
+                      Básico (impresso)
+                    </Button>
+                    <Button variant="ghost" onClick={onPresetHand}>
+                      Manuscrito (linhas + Sauvola)
+                    </Button>
+                    <label className="flex items-center gap-2 ml-2 text-[11px] text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={enhance}
+                        onChange={(e) => setEnhance(e.target.checked)}
+                      />
+                      Melhorar imagem antes do OCR
+                    </label>
+                  </div>
+
+                  {docMode === "hand" && (
+                    <div className="mt-2 flex flex-col gap-2">
+                      <div className="text-[11px] text-slate-400">
+                        Para manuscritos, use recorte + binarização adaptativa e,
+                        se necessário, modo linha.
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <div className="font-medium text-[11px] mb-1 text-slate-200">
+                            Recorte (%)
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] text-slate-400">
+                                Topo
+                              </span>
+                              <input
+                                type="number"
+                                className="w-16 border border-slate-700 bg-slate-900 rounded px-1 py-0.5 text-[11px] text-slate-100"
+                                value={crop.top}
+                                onChange={(e) =>
+                                  setCrop((c) => ({
+                                    ...c,
+                                    top: Number(e.target.value) || 0,
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] text-slate-400">
+                                Base
+                              </span>
+                              <input
+                                type="number"
+                                className="w-16 border border-slate-700 bg-slate-900 rounded px-1 py-0.5 text-[11px] text-slate-100"
+                                value={crop.bottom}
+                                onChange={(e) =>
+                                  setCrop((c) => ({
+                                    ...c,
+                                    bottom: Number(e.target.value) || 0,
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] text-slate-400">
+                                Esquerda
+                              </span>
+                              <input
+                                type="number"
+                                className="w-16 border border-slate-700 bg-slate-900 rounded px-1 py-0.5 text-[11px] text-slate-100"
+                                value={crop.left}
+                                onChange={(e) =>
+                                  setCrop((c) => ({
+                                    ...c,
+                                    left: Number(e.target.value) || 0,
+                                  }))
+                                }
+                              />
+                            </label>
+                            <label className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] text-slate-400">
+                                Direita
+                              </span>
+                              <input
+                                type="number"
+                                className="w-16 border border-slate-700 bg-slate-900 rounded px-1 py-0.5 text-[11px] text-slate-100"
+                                value={crop.right}
+                                onChange={(e) =>
+                                  setCrop((c) => ({
+                                    ...c,
+                                    right: Number(e.target.value) || 0,
+                                  }))
+                                }
+                              />
+                            </label>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-2">
+                          <div>
+                            <div className="font-medium text-[11px] mb-1 text-slate-200">
+                              Binarização
+                            </div>
+                            <select
+                              className="border border-slate-700 bg-slate-900 rounded px-2 py-1 text-[11px] w-full text-slate-100"
+                              value={binarize}
+                              onChange={(e) => setBinarize(e.target.value)}
+                            >
+                              <option value="sauvola">
+                                Sauvola (adaptativa)
+                              </option>
+                              <option value="otsu">Otsu</option>
+                              <option value="none">Nenhuma</option>
+                            </select>
+                          </div>
+
+                          <div>
+                            <div className="font-medium text-[11px] mb-1 text-slate-200">
+                              Canal
+                            </div>
+                            <select
+                              className="border border-slate-700 bg-slate-900 rounded px-2 py-1 text-[11px] w-full text-slate-100"
+                              value={channel}
+                              onChange={(e) => setChannel(e.target.value)}
+                            >
+                              <option value="auto">Automático</option>
+                              <option value="r">Vermelho</option>
+                              <option value="g">Verde</option>
+                              <option value="b">Azul</option>
+                            </select>
+                          </div>
+
+                          <label className="flex items-center gap-2 mt-1 text-[11px] text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={invert}
+                              onChange={(e) => setInvert(e.target.checked)}
+                            />
+                            Inverter (texto claro em fundo escuro)
+                          </label>
+
+                          <label className="flex items-center justify-between gap-2 mt-1">
+                            <span className="text-[11px] text-slate-400">
+                              Inclinação (graus)
+                            </span>
+                            <input
+                              type="number"
+                              className="w-16 border border-slate-700 bg-slate-900 rounded px-1 py-0.5 text-[11px] text-slate-100"
+                              value={skew}
+                              onChange={(e) =>
+                                setSkew(Number(e.target.value) || 0)
+                              }
+                            />
+                          </label>
+
+                          <label className="flex items-center justify-between gap-2 mt-1">
+                            <span className="text-[11px] text-slate-400">
+                              Modo PSM
+                            </span>
+                            <input
+                              type="number"
+                              className="w-16 border border-slate-700 bg-slate-900 rounded px-1 py-0.5 text-[11px] text-slate-100"
+                              min={3}
+                              max={13}
+                              value={psm}
+                              onChange={(e) =>
+                                setPsm(Number(e.target.value) || 6)
+                              }
+                            />
+                          </label>
+
+                          <label className="flex items-center gap-2 mt-1 text-[11px] text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={lineMode}
+                              onChange={(e) => setLineMode(e.target.checked)}
+                            />
+                            OCR por faixas (linhas horizontais)
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t border-slate-700 mt-2 flex items-center justify-between gap-2">
+                    <div className="flex flex-col gap-1">
+                      <div className="text-[11px] text-slate-400">
+                        Status:{" "}
+                        <span className="font-medium text-slate-100">
+                          {status === "idle"
+                            ? "Aguardando arquivo"
+                            : status === "ready"
+                            ? "Pronto para transcrever"
+                            : "Transcrevendo..."}
+                        </span>
+                      </div>
+                      {status === "transcribing" && (
+                        <div className="w-full h-1 bg-slate-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-cyan-400 transition-all"
+                            style={{ width: `${progress}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      variant="primary"
+                      onClick={handleTranscribe}
+                      disabled={!file || isBusy}
+                    >
+                      {isBusy ? "Transcrevendo..." : "Transcrever"}
+                    </Button>
+                  </div>
+
+                  {error && (
+                    <div className="mt-1 text-[11px] text-red-400">{error}</div>
+                  )}
+                </div>
+              </Section>
+
+              <Section title="Transcrição">
+                <div className="flex flex-col h-full">
+                  <div className="flex-1">
+                    <textarea
+                      className="w-full h-64 md:h-80 border border-slate-700 rounded-xl p-3 text-xs font-mono resize-none bg-slate-950 text-slate-100"
+                      value={transcription}
+                      onChange={(e) => setTranscription(e.target.value)}
+                      placeholder="A transcrição aparecerá aqui..."
+                    />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+                    <div>
+                      <span className="font-medium text-slate-200">
+                        Caracteres:
+                      </span>{" "}
+                      {transcription.length}
+                    </div>
+                    <div className="flex gap-2">
+                      <Tag>Protótipo local</Tag>
+                      <Tag>Foco em manuscritos</Tag>
+                    </div>
+                  </div>
+                </div>
+              </Section>
+            </div>
+          </>
+        )}
+
+        {route === "about" && (
+          <div className="grid md:grid-cols-2 gap-4">
+            <Section title="Sobre o Sistema">
+              <p className="text-sm text-slate-300">
+                O Transcribex é um protótipo de OCR local voltado para pesquisa
+                histórica. Toda a análise é feita no navegador usando
+                Tesseract.js, com ajustes finos para manuscritos e documentos
+                impressos.
+              </p>
+            </Section>
+            <Section title="Uso em pesquisa">
+              <p className="text-sm text-slate-300">
+                A ideia é permitir que você teste rapidamente diferentes
+                configurações de recorte, binarização e segmentação de linhas,
+                antes de migrar para soluções de HTR mais pesadas em servidor.
+              </p>
+            </Section>
+          </div>
+        )}
+      </main>
     </div>
-  );
-}
-
-function AboutSystem() {
-  return (
-    <Section title="Sobre o Sistema">
-      <p>Protótipo para transcrição de documentos históricos. OCR local via Tesseract.js; para casos difíceis, recomenda-se HTR (kraken/TrOCR) em backend.</p>
-    </Section>
-  );
-}
-
-function AboutDocuments() {
-  return (
-    <Section title="Sobre Documentos">
-      <p>Digitalização e transcrição ampliam o acesso a fontes históricas e facilitam pesquisa e preservação do patrimônio.</p>
-    </Section>
   );
 }
